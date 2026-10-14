@@ -20,6 +20,11 @@ from typing import Any
 OUTPUT_LIMIT = 16_000
 VALUE_LIMIT = 8_000
 
+# Mesh quality for the live viewer and scene JSON: the angular tolerance (in degrees per
+# unit) of the default tessellation. Higher is coarser and faster; lower is finer.
+# Overridable for hosts that need finer or coarser default meshes.
+_MESH_ANGLE_TOLERANCE = float(os.environ.get("SMLIBPY_MESH_ANGLE_TOLERANCE", "12.0"))
+
 
 def main(conn: Any) -> None:
     # Anything the kernel or a library prints must not reach the server's stdout, which
@@ -129,7 +134,7 @@ class _Worker:
         if not items:
             return {"ok": True, "glb": None, "summary": ""}
         shapes = [s.named(n) if hasattr(s, "named") and not getattr(s, "name", None) else s for n, s, _ in items]
-        glb, summary = _glb_bytes(shapes, None, 12.0, True)
+        glb, summary = _glb_bytes(shapes, None, _MESH_ANGLE_TOLERANCE, True)
         return {"ok": True, "glb": glb, "summary": summary}
 
     def op_scene_json(self) -> dict[str, Any]:
@@ -181,12 +186,12 @@ class _Worker:
                     # the body is meshed in one piece and cut by face: imported faces the
                     # kernel cannot mesh on their own show too
                     try:
-                        meshes = face_meshes(shape, tol, 12.0) if not isinstance(shape, Face) else None
+                        meshes = face_meshes(shape, tol, _MESH_ANGLE_TOLERANCE) if not isinstance(shape, Face) else None
                     except Exception:
                         meshes = None
                     for i, f in enumerate(faces):
                         try:
-                            m = meshes[i] if meshes is not None else tessellate(f, tol, 12.0)
+                            m = meshes[i] if meshes is not None else tessellate(f, tol, _MESH_ANGLE_TOLERANCE)
                             planar = f.geom_type == "plane"
                         except Exception:  # one face the kernel cannot mesh: the others still show
                             continue
