@@ -90,7 +90,8 @@ then .on(plane or face) and extrude or revolve.
 every Part and Shell variable of the session is shown, tools and intermediate bodies included.
 - Errors are ModelingError (or KernelError) with a hint. Read the hint: it says what to change.
 - A script that fails changes nothing: the session keeps the state before it. checkpoint() before \
-a risky step and restore() to go back.
+a risky step and restore() to go back. undo() takes back the last step when it was wrong. \
+export_script(path) writes the whole session as one runnable .py file.
 - Sheet metal: start from a plate (or sketch.extrude(thickness)), add flange() and fold() with \
 radius= and k_factor=; flat_pattern(part) gives the blank, its outline and bend lines (guide sheetmetal/generic).
 
@@ -444,6 +445,28 @@ def build_server(session: Session | None = None) -> Any:
         shown = await call(session.call, "scene")
         note = viewer_note(shown.get("scene", []))
         return text + (f"\n\n{note}" if note else "")
+
+    @tool()
+    async def undo() -> str:
+        """Remove the last script and rebuild: one step back, without a checkpoint."""
+        try:
+            note = await call(session.undo)
+        except KeyError as e:
+            return str(e.args[0])
+        shown = await call(session.call, "scene")
+        scene_text = _fmt_scene(shown.get("scene", []), bool(shown.get("explicit")))
+        return note + "\n\n" + scene_text
+
+    @tool()
+    async def export_script(
+        path: Annotated[str, Field(description="Absolute file path for the .py export.")],
+    ) -> str:
+        """Write the session's scripts as one runnable Python file: the part as a script."""
+        try:
+            saved = await call(session.export_script, path)
+            return f"Exported {len(session.history)} scripts to {saved}"
+        except OSError as e:
+            return f"Export failed: {type(e).__name__}: {e}"
 
     @tool()
     async def checkpoint(label: Annotated[str | None, Field(description="A name to restore it by.")] = None) -> str:
