@@ -90,7 +90,8 @@ then .on(plane or face) and extrude or revolve.
 every Part and Shell variable of the session is shown, tools and intermediate bodies included.
 - Errors are ModelingError (or KernelError) with a hint. Read the hint: it says what to change.
 - A script that fails changes nothing: the session keeps the state before it. checkpoint() before \
-a risky step and restore() to go back.
+a risky step and restore() to go back. save_session(path) writes the session's scripts and \
+checkpoints to a file; load_session(path) restores it later, even in a new conversation.
 - Sheet metal: start from a plate (or sketch.extrude(thickness)), add flange() and fold() with \
 radius= and k_factor=; flat_pattern(part) gives the blank, its outline and bend lines (guide sheetmetal/generic).
 
@@ -444,6 +445,37 @@ def build_server(session: Session | None = None) -> Any:
         shown = await call(session.call, "scene")
         note = viewer_note(shown.get("scene", []))
         return text + (f"\n\n{note}" if note else "")
+
+    @tool()
+    async def save_session(
+        path: Annotated[str, Field(description="Absolute file path for the session (.json). The session's scripts "
+                                     "and checkpoints are written, to restore with load_session.")],
+    ) -> str:
+        """Save the session to a file: its scripts and checkpoints, to restore later with load_session."""
+        try:
+            saved = await call(session.save_to_file, path)
+            return f"Session saved to {saved} ({len(session.history)} scripts, {len(session.checkpoints)} checkpoints)."
+        except OSError as e:
+            return f"Save failed: {type(e).__name__}: {e}"
+
+    @tool()
+    async def load_session(
+        path: Annotated[str, Field(description="Absolute path of a session file written by save_session.")],
+    ) -> str:
+        """Restore a session from a file: the session is cleared and its scripts run again."""
+        try:
+            note = await call(session.load_from_file, path)
+        except FileNotFoundError:
+            return f"No such file: {path}"
+        except (ValueError, KeyError, json.JSONDecodeError) as e:
+            return f"Load failed: {e}"
+        shown = await call(session.call, "scene")
+        scene_text = _fmt_scene(shown.get("scene", []), bool(shown.get("explicit")))
+        viewer = viewer_note(shown.get("scene", []))
+        parts = [note, scene_text]
+        if viewer:
+            parts.append(viewer)
+        return "\n\n".join(parts)
 
     @tool()
     async def checkpoint(label: Annotated[str | None, Field(description="A name to restore it by.")] = None) -> str:

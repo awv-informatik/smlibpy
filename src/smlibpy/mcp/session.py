@@ -7,7 +7,9 @@ restored, a new worker runs that sequence again.
 
 from __future__ import annotations
 
+import json
 import multiprocessing
+import os
 import threading
 from typing import Any
 
@@ -17,6 +19,8 @@ DEFAULT_TIMEOUT = 120.0
 MAX_TIMEOUT = 900.0
 REPLAY_TIMEOUT = 900.0
 MAX_CHECKPOINTS = 20
+SESSION_FORMAT = "smlibpy-session"
+SESSION_FORMAT_VERSION = 1
 
 
 class WorkerLost(Exception):
@@ -171,6 +175,70 @@ class Session:
             self.checkpoints = []
             self._start()
             self._bump()
+
+    # -- persistence ---------------------------------------------------------------
+    def save_to_file(self, path: str) -> str:
+        """Write the session's scripts and checkpoints to a JSON file.
+
+        The file holds what a session is: the sequence of scripts that built its
+        state, and the checkpoint labels with their positions in that sequence.
+        ``load_from_file`` replays the scripts to restore the session.
+        """
+        with self._lock:
+            data = {
+                "format": SESSION_FORMAT,
+                "format_version": SESSION_FORMAT_VERSION,
+                "history": [{"code": code, "label": label} for code, label in self.history],
+                "checkpoints": [{"label": label, "index": n} for label, n in self.checkpoints],
+            }
+            path = os.path.abspath(os.path.expanduser(path))
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=1)
+            return path
+
+    def load_from_file(self, path: str) -> str:
+        """Restore a session saved by ``save_to_file``: clear, then replay its scripts.
+
+        Checkpoints are restored too, when their positions still hold (a checkpoint
+        past a script that failed to replay is dropped).
+        """
+        path = os.path.abspath(os.path.expanduser(path))
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("format") != SESSION_FORMAT:
+            raise ValueError(f"{path}: not a {SESSION_FORMAT} file")
+        if data.get("format_version") != SESSION_FORMAT_VERSION:
+            raise ValueError(f"{path}: unsupported format version {data.get('format_version')!r}")
+        with self._lock:
+            self.clear()
+            scripts = data.get("history", [])
+            replayed = 0
+            for i, entry in enumerate(scripts):
+                code, label = entry["code"], entry.get("label")
+                try:
+                    answer = self._call(REPLAY_TIMEOUT, {"op": "run", "code": code, "label": label})
+                except WorkerLost as e:
+                    note = self._rebuild()
+                    return (f"Restored {replayed} of {len(scripts)} scripts; the session is as it was "
+                            f"before script {i + 1} ({e}). {note}")
+                if not answer.get("ok"):
+                    self._bump()
+                    return (f"Restored {replayed} of {len(scripts)} scripts; script {i + 1} failed "
+                            f"this time: {answer.get('error', '')[:200]}")
+                self.history.append((code, label))
+                replayed += 1
+            kept = []
+            for c in data.get("checkpoints", []):
+                if isinstance(c.get("label"), str) and isinstance(c.get("index"), int) \
+                        and 0 <= c["index"] <= replayed:
+                    kept.append((c["label"], c["index"]))
+            self.checkpoints = kept[-MAX_CHECKPOINTS:]
+            self._bump()
+            n_ckpt = len(self.checkpoints)
+            return f"Restored {replayed} scripts and {n_ckpt} checkpoints."
 
     # -- change notification --------------------------------------------------------
     def _bump(self) -> None:

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import os
 import sys
 import urllib.request
@@ -45,6 +46,48 @@ def test_checkpoints(session):
     note = session.restore("cube")
     assert "cube" in note
     assert float(session.run("p.volume")["value"]) == pytest.approx(1000, rel=1e-9)
+
+
+def test_session_save_and_load(session, tmp_path):
+    session.clear()
+    session.run("a = Box(20, 15, 10)", label="base plate")
+    session.run("b = a - Cylinder(3, 20)", label="hole")
+    session.checkpoint("with hole")
+    session.run("c = b.fillet(b.edges().parallel_to(Z), 2)", label="fillet")
+    path = session.save_to_file(str(tmp_path / "session.json"))
+    assert os.path.getsize(path) > 0
+    n_scripts = len(session.history)
+    n_checkpoints = len(session.checkpoints)
+    # A new session restores the saved one
+    session.clear()
+    assert session.run("x = Sphere(1)")["ok"]
+    note = session.load_from_file(path)
+    assert "3 scripts" in note and "1 checkpoints" in note
+    assert len(session.history) == n_scripts
+    assert len(session.checkpoints) == n_checkpoints
+    assert float(session.run("c.volume")["value"]) < float(session.run("a.volume")["value"])
+    assert abs(float(session.run("a.volume")["value"]) - 3000) < 1
+    # Checkpoints still work after a restore
+    session.restore("with hole")
+    assert float(session.run("b.volume")["value"]) < 3000
+
+
+def test_session_load_bad_files(session, tmp_path):
+    session.clear()
+    session.run("q = Box(5, 5, 5)")
+    missing = tmp_path / "nope.json"
+    with pytest.raises(FileNotFoundError):
+        session.load_from_file(str(missing))
+    not_session = tmp_path / "wrong.json"
+    not_session.write_text('{"format": "other"}')
+    with pytest.raises(ValueError, match="not a smlibpy-session file"):
+        session.load_from_file(str(not_session))
+    bad_json = tmp_path / "broken.json"
+    bad_json.write_text("{not json")
+    with pytest.raises(json.JSONDecodeError):
+        session.load_from_file(str(bad_json))
+    # The session is untouched by failed loads
+    assert float(session.run("q.volume")["value"]) == pytest.approx(125, rel=1e-9)
 
 
 def test_show_snapshot_save_inspect(session, tmp_path):
