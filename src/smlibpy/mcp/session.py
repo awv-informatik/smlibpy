@@ -7,7 +7,9 @@ restored, a new worker runs that sequence again.
 
 from __future__ import annotations
 
+import json
 import multiprocessing
+import os
 import threading
 from typing import Any
 
@@ -171,6 +173,46 @@ class Session:
             self.checkpoints = []
             self._start()
             self._bump()
+
+    # -- undo ------------------------------------------------------------------------
+    def undo(self) -> str:
+        """Remove the last script of the history and rebuild: one step back.
+
+        This is a convenience over checkpoint/restore for the common case of
+        \"the last step was wrong\": it drops the last entry and replays the rest.
+        Checkpoints that pointed past the removed script are dropped.
+        """
+        with self._lock:
+            if not self.history:
+                raise KeyError("nothing to undo: the session is empty")
+            code, label = self.history.pop()
+            self.checkpoints = [(k, n) for k, n in self.checkpoints if n <= len(self.history)]
+            note = self._rebuild()
+            what = f"{label!r}" if label else f"script {len(self.history) + 1}"
+            return f"Undid {what}. {note}"
+
+    # -- persistence ---------------------------------------------------------------
+    def export_script(self, path: str) -> str:
+        """Write the session's scripts as one runnable Python file.
+
+        Each script becomes a commented block, so the file reads as the story of
+        the part and runs top to bottom to rebuild it.  Labels become section
+        headers.  Loading a file is written as ``read_step``/``read_stl`` etc.
+        """
+        with self._lock:
+            path = os.path.abspath(os.path.expanduser(path))
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            lines = ["# smlibpy session — exported script", ""]
+            for i, (code, label) in enumerate(self.history, 1):
+                header = f"# --- step {i}: {label}" if label else f"# --- step {i}"
+                lines.append(header)
+                lines.extend(code.rstrip().splitlines())
+                lines.append("")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            return path
 
     # -- change notification --------------------------------------------------------
     def _bump(self) -> None:
