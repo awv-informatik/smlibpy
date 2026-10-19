@@ -48,6 +48,52 @@ def test_checkpoints(session):
     assert float(session.run("p.volume")["value"]) == pytest.approx(1000, rel=1e-9)
 
 
+def test_undo(session):
+    session.clear()
+    with pytest.raises(KeyError, match="nothing to undo"):
+        session.undo()
+    session.run("a = Box(10, 10, 10)", label="base")
+    session.run("a = a - Cylinder(2, 20)", label="hole")
+    session.checkpoint("with hole")
+    session.run("a = a - Cylinder(1, 20).translate(3, 0, 0)", label="small hole")
+    assert float(session.run("a.volume")["value"]) < 900
+    # note: session.run("a.volume") also appends to history (event sourcing:
+    # every successful script replays), so undo first removes that query
+    note = session.undo()
+    assert "script" in note  # the volume query, unlabelled
+    note = session.undo()
+    assert "small hole" in note
+    # Back to the checkpoint state
+    assert float(session.run("a.volume")["value"]) == pytest.approx(1000 - 3.141592653589793 * 4 * 10, rel=1e-6)
+    # Checkpoint past the undo point is dropped
+    assert all(n <= 2 for _, n in session.checkpoints)
+    note = session.undo()  # the volume query again
+    assert "script" in note
+    note = session.undo()
+    assert "hole" in note
+    assert float(session.run("a.volume")["value"]) == pytest.approx(1000, rel=1e-9)
+    note = session.undo()  # the volume query
+    note = session.undo()
+    assert "base" in note
+    with pytest.raises(KeyError, match="nothing to undo"):
+        session.undo()
+
+
+def test_export_script(session, tmp_path):
+    session.clear()
+    session.run("base = Box(40, 30, 10)", label="plate")
+    session.run("part = base - Cylinder(5, 20)", label="bore")
+    path = session.export_script(str(tmp_path / "part.py"))
+    text = open(path).read()
+    assert "from smlibpy import" not in text  # plain script, the reader adds imports
+    assert "base = Box(40, 30, 10)" in text
+    assert "part = base - Cylinder(5, 20)" in text
+    assert "# --- step 1: plate" in text
+    assert "# --- step 2: bore" in text
+    # The exported file is valid Python
+    compile(text, path, "exec")
+
+
 def test_show_snapshot_save_inspect(session, tmp_path):
     session.clear()
     session.run("a = Box(10, 10, 10)\nb = Sphere(4).translate(20, 0, 0)\nshow(b)")
