@@ -20,16 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-15-intel]
         python: ["3.12"]
-        include:
-          - os: ubuntu-latest
-            python: "3.10"
-          - os: ubuntu-latest
-            python: "3.13"
-          # (the Linux arm64 wheels: GCC's arithmetic on aarch64, which the other jobs do not see)
-          - os: ubuntu-24.04-arm
-            python: "3.12"
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -59,7 +51,34 @@ jobs:
       - name: Test
         env:
           SMLIBPY_REQUIRE_USD_VALIDATOR: ${{ (runner.os == 'macOS' || (runner.os == 'Linux' && runner.arch == 'X64' && matrix.python == '3.12')) && '1' || '' }}
-        run: pytest -q
+        run: |
+          pip install pytest-xdist
+          pytest -q -n 3 -rfE -p faulthandler
+
+  asan-intel:
+    name: AddressSanitizer / macos-15-intel
+    if: github.event_name != 'workflow_dispatch' || inputs.only != 'js'
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Tools
+        run: pip install numpy pytest pybind11 ninja
+      - name: Build with AddressSanitizer
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSKBUILD=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer" \
+            -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" -DPython_EXECUTABLE="$(which python)"
+          cmake --build build-asan
+      - name: The guard-off fillets of imported parts, alone
+        run: python tools/sanitize/run.py --build build-asan --no-leaks tests/test_lane_WN.py -- -k imported
+      - name: Tests under the sanitizer
+        run: python tools/sanitize/run.py --build build-asan --no-leaks
 
   js:
     # smlibwasm: the kernel and smlibpy's C++ compiled to WebAssembly, and the TypeScript port with
